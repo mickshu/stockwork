@@ -317,6 +317,136 @@ def get_industry_pe(industry_name: str) -> float | None:
         return None
 
 
+# ----------------------------- 资金面: 个股资金流向 -----------------------------
+
+def _market_of(code: str) -> str:
+    """A 股代码 → 交易所标识 (sh/sz/bj), 用于 stock_individual_fund_flow。"""
+    if code.startswith(("6", "9")):
+        return "sh"
+    if code.startswith(("0", "3")):
+        return "sz"
+    if code.startswith(("4", "8")):
+        return "bj"
+    return "sh"
+
+
+@_cache_data(ttl=3600, show_spinner=False)
+def get_fund_flow(symbol: str) -> pd.DataFrame:
+    """个股资金流向历史 (近 ~250 个交易日)。
+
+    输出列: [date, close, pct_change, main_net, main_pct,
+            super_net, big_net, mid_net, small_net]
+    单位: 净额=元, pct=百分数。
+    push2his 接口偶发不可达——失败重试 3 次后返回空 DataFrame, 由上层 UI 提示降级。
+    """
+    code = normalize_symbol(symbol)
+    empty_cols = ["date", "close", "pct_change", "main_net", "main_pct",
+                  "super_net", "big_net", "mid_net", "small_net"]
+    try:
+        raw = _retry(lambda: ak.stock_individual_fund_flow(stock=code, market=_market_of(code)))
+    except Exception:
+        return pd.DataFrame(columns=empty_cols)
+    if raw is None or raw.empty:
+        return pd.DataFrame(columns=empty_cols)
+
+    rename = {
+        "日期": "date", "收盘价": "close", "涨跌幅": "pct_change",
+        "主力净流入-净额": "main_net", "主力净流入-净占比": "main_pct",
+        "超大单净流入-净额": "super_net",
+        "大单净流入-净额": "big_net",
+        "中单净流入-净额": "mid_net",
+        "小单净流入-净额": "small_net",
+    }
+    keep = [c for c in rename if c in raw.columns]
+    df = raw[keep].rename(columns={k: rename[k] for k in keep}).copy()
+    df["date"] = pd.to_datetime(df["date"])
+    for c in df.columns:
+        if c != "date":
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+    df = df.sort_values("date").reset_index(drop=True)
+    # 确保所有列存在
+    for c in empty_cols:
+        if c not in df.columns:
+            df[c] = pd.NA
+    return df[empty_cols]
+
+
+# ----------------------------- 资金面: 北向资金 -----------------------------
+
+@_cache_data(ttl=3600, show_spinner=False)
+def get_north_holding(symbol: str) -> pd.DataFrame:
+    """北向资金对该股的持股历史 (2017 至今, 沪/深股通成立后才有数据)。
+
+    输出列: [date, close, shares, market_value, pct_of_a, net_buy_amount]
+        - shares: 持股数量
+        - market_value: 持股市值 (元)
+        - pct_of_a: 持股数量占 A 股流通比 (%)
+        - net_buy_amount: 当日净增持资金 (元)
+    """
+    code = normalize_symbol(symbol)
+    empty_cols = ["date", "close", "shares", "market_value", "pct_of_a", "net_buy_amount"]
+    try:
+        raw = _retry(lambda: ak.stock_hsgt_individual_em(symbol=code))
+    except Exception:
+        return pd.DataFrame(columns=empty_cols)
+    if raw is None or raw.empty:
+        return pd.DataFrame(columns=empty_cols)
+
+    rename = {
+        "持股日期": "date", "当日收盘价": "close",
+        "持股数量": "shares", "持股市值": "market_value",
+        "持股数量占A股百分比": "pct_of_a",
+        "今日增持资金": "net_buy_amount",
+    }
+    keep = [c for c in rename if c in raw.columns]
+    df = raw[keep].rename(columns={k: rename[k] for k in keep}).copy()
+    df["date"] = pd.to_datetime(df["date"])
+    for c in df.columns:
+        if c != "date":
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+    df = df.sort_values("date").reset_index(drop=True)
+    for c in empty_cols:
+        if c not in df.columns:
+            df[c] = pd.NA
+    return df[empty_cols]
+
+
+# ----------------------------- 资金面: 全市场融资融券 -----------------------------
+
+@_cache_data(ttl=86400, show_spinner=False)
+def get_margin_market() -> pd.DataFrame:
+    """全市场融资融券余额历史 (2012-09 至今, 日级)。
+
+    输出列: [date, finance_balance, securities_balance, total_balance]
+        - finance_balance: 融资余额 (亿元)
+        - securities_balance: 融券余额 (亿元)
+        - total_balance: 融资融券余额 (亿元)
+    注意: akshare 返回单位为亿元, 不再换算。
+    """
+    empty_cols = ["date", "finance_balance", "securities_balance", "total_balance"]
+    try:
+        raw = _retry(lambda: ak.stock_margin_account_info())
+    except Exception:
+        return pd.DataFrame(columns=empty_cols)
+    if raw is None or raw.empty:
+        return pd.DataFrame(columns=empty_cols)
+
+    rename = {
+        "日期": "date",
+        "融资余额": "finance_balance",
+        "融券余额": "securities_balance",
+    }
+    keep = [c for c in rename if c in raw.columns]
+    df = raw[keep].rename(columns={k: rename[k] for k in keep}).copy()
+    df["date"] = pd.to_datetime(df["date"])
+    for c in df.columns:
+        if c != "date":
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+    df["total_balance"] = df["finance_balance"].fillna(0) + df["securities_balance"].fillna(0)
+    df = df.sort_values("date").reset_index(drop=True)
+    return df[empty_cols]
+
+
 # ----------------------------- 内部工具 -----------------------------
 
 def _safe_float(x: Any) -> float | None:

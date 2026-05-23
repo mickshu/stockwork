@@ -15,7 +15,10 @@ from analysis.scoring import evaluate
 from analysis.technical import add_all, gen_signal, weekly_trend
 from data.fetcher import (
     get_financial_indicators,
+    get_fund_flow,
     get_industry_pe,
+    get_margin_market,
+    get_north_holding,
     get_price_history,
     get_realtime_quote,
     get_stock_info,
@@ -36,19 +39,7 @@ def main() -> None:
     cfg = render_sidebar()
     if cfg is None:
         st.title("📈 A 股基本面 + 技术面分析助手")
-        st.markdown(
-            "**使用步骤**\n\n"
-            "1. 在左侧输入 6 位股票代码（如 `600519`）\n"
-            "2. 选择 K 线周期与均线参数\n"
-            "3. 点击 **开始分析** 按钮\n\n"
-            "**输出内容**\n"
-            "- 📊 概览：实时报价、市值、估值\n"
-            "- 📑 基本面：ROE / 资产负债率 / 净利润 CAGR 等核心指标\n"
-            "- 📈 技术面：K 线 + MA + 布林带 + MACD + RSI\n"
-            "- 🎯 综合评分：买卖信号 + 风险提示\n\n"
-            "---\n"
-            "*数据来源：akshare（东财 / 同花顺 / 百度）。仅供学习研究，不构成投资建议。*"
-        )
+        st.info("请在左侧输入有效的 6 位股票代码 (如 `600519`) 开始分析。")
         return
 
     symbol = cfg["symbol"]
@@ -73,6 +64,9 @@ def main() -> None:
         valuation = _safe_call(get_valuation, symbol, default={}) or {}
         quote = _safe_call(get_realtime_quote, symbol, default={}) or {}
         industry_pe = _safe_call(get_industry_pe, info.get("industry", ""), default=None)
+        df_fund_flow = _safe_call(get_fund_flow, symbol, default=None)
+        df_north = _safe_call(get_north_holding, symbol, default=None)
+        df_margin = _safe_call(get_margin_market, default=None)
 
     # ---------- 计算 ----------
     if df_price is None or df_price.empty:
@@ -119,7 +113,10 @@ def main() -> None:
     with tab_fund:
         render_fundamental(fund_items, df_fin)
     with tab_tech:
-        render_technical(df_ind, weekly_info, signal, ma_periods)
+        render_technical(
+            df_ind, weekly_info, signal, ma_periods,
+            fund_flow_df=df_fund_flow, north_df=df_north, margin_df=df_margin,
+        )
     with tab_masters:
         render_masters(master_views, master_consensus)
     with tab_report:
