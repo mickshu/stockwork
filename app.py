@@ -30,12 +30,14 @@ from ui.overview_tab import render as render_overview
 from ui.report_tab import render as render_report
 from ui.sidebar import render_sidebar
 from ui.technical_tab import render as render_technical
+from ui.theme import inject_css
 
 
 st.set_page_config(page_title="A股分析助手", page_icon="📈", layout="wide")
 
 
 def main() -> None:
+    inject_css()
     cfg = render_sidebar()
     if cfg is None:
         st.title("📈 A 股基本面 + 技术面分析助手")

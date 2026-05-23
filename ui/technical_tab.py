@@ -6,6 +6,8 @@ import plotly.graph_objects as go
 import streamlit as st
 from plotly.subplots import make_subplots
 
+from ui.theme import COLORS, apply_plotly_theme, ma_color
+
 
 def render(
     df_ind: pd.DataFrame,
@@ -45,7 +47,8 @@ def render(
         go.Candlestick(
             x=df["date"], open=df["open"], high=df["high"], low=df["low"], close=df["close"],
             name="K线",
-            increasing_line_color="#ef4444", decreasing_line_color="#10b981",
+            increasing_line_color=COLORS["bull"], decreasing_line_color=COLORS["bear"],
+            increasing_fillcolor=COLORS["bull"], decreasing_fillcolor=COLORS["bear"],
         ),
         row=1, col=1,
     )
@@ -56,7 +59,7 @@ def render(
         if col in df.columns:
             fig.add_trace(
                 go.Scatter(x=df["date"], y=df[col], name=col, mode="lines",
-                           line=dict(width=1)),
+                           line=dict(color=ma_color(p), width=1.2)),
                 row=1, col=1,
             )
 
@@ -64,40 +67,35 @@ def render(
     if "BOLL_UP" in df.columns:
         fig.add_trace(
             go.Scatter(x=df["date"], y=df["BOLL_UP"], name="BOLL上轨", mode="lines",
-                       line=dict(color="#9ca3af", width=1, dash="dot")),
+                       line=dict(color=COLORS["boll_band"], width=1, dash="dot")),
             row=1, col=1,
         )
         fig.add_trace(
             go.Scatter(x=df["date"], y=df["BOLL_LOW"], name="BOLL下轨", mode="lines",
-                       line=dict(color="#9ca3af", width=1, dash="dot"),
-                       fill="tonexty", fillcolor="rgba(156,163,175,0.08)"),
+                       line=dict(color=COLORS["boll_band"], width=1, dash="dot"),
+                       fill="tonexty", fillcolor=COLORS["boll_fill"]),
             row=1, col=1,
         )
 
     # --- MACD ---
     if "DIF" in df.columns:
         fig.add_trace(go.Scatter(x=df["date"], y=df["DIF"], name="DIF",
-                                  line=dict(color="#3b82f6", width=1)), row=2, col=1)
+                                  line=dict(color=COLORS["macd_dif"], width=1.2)), row=2, col=1)
         fig.add_trace(go.Scatter(x=df["date"], y=df["DEA"], name="DEA",
-                                  line=dict(color="#f59e0b", width=1)), row=2, col=1)
-        colors = ["#ef4444" if v >= 0 else "#10b981" for v in df["MACD_HIST"].fillna(0)]
+                                  line=dict(color=COLORS["macd_dea"], width=1.2)), row=2, col=1)
+        colors = [COLORS["bull"] if v >= 0 else COLORS["bear"] for v in df["MACD_HIST"].fillna(0)]
         fig.add_trace(go.Bar(x=df["date"], y=df["MACD_HIST"], name="MACD柱",
                               marker_color=colors), row=2, col=1)
 
     # --- RSI ---
     if "RSI14" in df.columns:
         fig.add_trace(go.Scatter(x=df["date"], y=df["RSI14"], name="RSI14",
-                                  line=dict(color="#8b5cf6", width=1)), row=3, col=1)
-        fig.add_hline(y=70, line_dash="dash", line_color="#ef4444", row=3, col=1)
-        fig.add_hline(y=30, line_dash="dash", line_color="#10b981", row=3, col=1)
+                                  line=dict(color=COLORS["rsi_line"], width=1.2)), row=3, col=1)
+        fig.add_hline(y=70, line_dash="dash", line_color=COLORS["rsi_over"], row=3, col=1)
+        fig.add_hline(y=30, line_dash="dash", line_color=COLORS["rsi_under"], row=3, col=1)
 
-    fig.update_layout(
-        height=720,
-        showlegend=True,
-        xaxis_rangeslider_visible=False,
-        margin=dict(l=10, r=10, t=40, b=10),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-    )
+    apply_plotly_theme(fig, height=720)
+    fig.update_layout(xaxis_rangeslider_visible=False)
     fig.update_xaxes(rangeslider_visible=False)
     st.plotly_chart(fig, use_container_width=True)
 
@@ -119,7 +117,7 @@ def _render_fund_flow(df: pd.DataFrame | None) -> None:
         st.info("个股资金流向接口暂不可达（push2his 节点偶发性问题），可稍后重试。")
         return
     d = df.tail(120).copy()
-    colors = ["#ef4444" if v >= 0 else "#10b981" for v in d["main_net"].fillna(0)]
+    colors = [COLORS["bull"] if v >= 0 else COLORS["bear"] for v in d["main_net"].fillna(0)]
     fig = make_subplots(specs=[[{"secondary_y": True}]])
     fig.add_trace(
         go.Bar(x=d["date"], y=d["main_net"], name="主力净流入(元)", marker_color=colors),
@@ -127,11 +125,10 @@ def _render_fund_flow(df: pd.DataFrame | None) -> None:
     )
     fig.add_trace(
         go.Scatter(x=d["date"], y=d["close"], name="收盘价", mode="lines",
-                   line=dict(color="#3b82f6", width=1.5)),
+                   line=dict(color=COLORS["fund_main"], width=1.5)),
         secondary_y=True,
     )
-    fig.update_layout(height=320, margin=dict(l=10, r=10, t=10, b=10),
-                      legend=dict(orientation="h", y=1.08))
+    apply_plotly_theme(fig, height=320)
     fig.update_yaxes(title_text="净流入(元)", secondary_y=False)
     fig.update_yaxes(title_text="收盘价", secondary_y=True)
     st.plotly_chart(fig, use_container_width=True)
@@ -156,16 +153,15 @@ def _render_north(df: pd.DataFrame | None) -> None:
     fig = make_subplots(specs=[[{"secondary_y": True}]])
     fig.add_trace(
         go.Scatter(x=d["date"], y=d["market_value"] / 1e8, name="持股市值(亿元)",
-                   mode="lines", line=dict(color="#3b82f6", width=1.5)),
+                   mode="lines", line=dict(color=COLORS["north_value"], width=1.5)),
         secondary_y=False,
     )
     fig.add_trace(
         go.Scatter(x=d["date"], y=d["pct_of_a"], name="持股占A股流通比(%)",
-                   mode="lines", line=dict(color="#f59e0b", width=1.5, dash="dot")),
+                   mode="lines", line=dict(color=COLORS["north_pct"], width=1.5, dash="dot")),
         secondary_y=True,
     )
-    fig.update_layout(height=320, margin=dict(l=10, r=10, t=10, b=10),
-                      legend=dict(orientation="h", y=1.08))
+    apply_plotly_theme(fig, height=320)
     fig.update_yaxes(title_text="持股市值(亿元)", secondary_y=False)
     fig.update_yaxes(title_text="占A股流通比(%)", secondary_y=True)
     st.plotly_chart(fig, use_container_width=True)
@@ -187,16 +183,15 @@ def _render_margin(df: pd.DataFrame | None) -> None:
     fig = make_subplots(specs=[[{"secondary_y": True}]])
     fig.add_trace(
         go.Scatter(x=d["date"], y=d["finance_balance"], name="融资余额(亿)",
-                   mode="lines", line=dict(color="#ef4444", width=1.5)),
+                   mode="lines", line=dict(color=COLORS["margin_finance"], width=1.5)),
         secondary_y=False,
     )
     fig.add_trace(
         go.Scatter(x=d["date"], y=d["securities_balance"], name="融券余额(亿)",
-                   mode="lines", line=dict(color="#10b981", width=1.5)),
+                   mode="lines", line=dict(color=COLORS["margin_securities"], width=1.5)),
         secondary_y=True,
     )
-    fig.update_layout(height=320, margin=dict(l=10, r=10, t=10, b=10),
-                      legend=dict(orientation="h", y=1.08))
+    apply_plotly_theme(fig, height=320)
     fig.update_yaxes(title_text="融资余额(亿)", secondary_y=False)
     fig.update_yaxes(title_text="融券余额(亿)", secondary_y=True)
     st.plotly_chart(fig, use_container_width=True)

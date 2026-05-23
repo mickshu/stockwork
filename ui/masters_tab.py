@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import streamlit as st
 
+from ui.theme import COLORS
+
 
 _VERDICT_COLOR = {"买入": "🟢", "观望": "🟡", "回避": "🔴"}
 
@@ -38,8 +40,10 @@ def render(views: list[dict], consensus: dict) -> None:
 def _render_card(v: dict) -> None:
     badge = _VERDICT_COLOR.get(v["verdict"], "⚪")
     with st.container(border=True):
+        muted = COLORS["text_muted"]
         st.markdown(
-            f"### {badge} {v['master']}  &nbsp;&nbsp;<span style='font-size:0.85em;color:#888'>{_stars(v['score'])}</span>",
+            f"### {badge} {v['master']}  &nbsp;&nbsp;"
+            f"<span style='font-size:0.85em;color:{muted}'>{_stars(v['score'])}</span>",
             unsafe_allow_html=True,
         )
         st.caption(f"**学派**：{v['school']}")

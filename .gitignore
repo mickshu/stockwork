@@ -27,6 +27,10 @@ ENV/
 # Claude Code session state
 .claude/
 
+# Skills tooling artifacts (npx skills add 产物)
+.agents/
+skills-lock.json
+
 # OS
 .DS_Store
 Thumbs.db
