@@ -7,7 +7,8 @@ from __future__ import annotations
 
 import datetime as dt
 import os
-from typing import Any
+import time
+from typing import Any, Callable
 
 # ---------------------------------------------------------------
 # 绕过系统代理: A 股数据接口均在国内, 走代理反而会因代理服务不稳定而失败。
@@ -87,6 +88,87 @@ def get_stock_info(symbol: str) -> dict[str, Any]:
 
 # ----------------------------- 历史行情 -----------------------------
 
+def _retry(fn: Callable, attempts: int = 3, base_delay: float = 0.6) -> Any:
+    """失败重试: 第 i 次失败后 sleep base_delay * 2**i 秒。耗尽后抛最后异常。"""
+    last_exc: Exception | None = None
+    for i in range(attempts):
+        try:
+            return fn()
+        except Exception as e:
+            last_exc = e
+            if i < attempts - 1:
+                time.sleep(base_delay * (2 ** i))
+    assert last_exc is not None
+    raise last_exc
+
+
+_EM_RENAME = {
+    "日期": "date", "开盘": "open", "收盘": "close", "最高": "high", "最低": "low",
+    "成交量": "volume", "成交额": "amount", "涨跌幅": "pct_change",
+}
+
+
+def _normalize_em(raw: pd.DataFrame) -> pd.DataFrame:
+    df = raw.rename(columns=_EM_RENAME)[list(_EM_RENAME.values())].copy()
+    df["date"] = pd.to_datetime(df["date"])
+    return df
+
+
+def _normalize_tx(raw: pd.DataFrame) -> pd.DataFrame:
+    """腾讯接口列名: date open close high low amount (无 amount 时可能为 vol)。"""
+    df = raw.copy()
+    df.columns = [str(c).strip().lower() for c in df.columns]
+    rename = {"vol": "volume", "成交量": "volume", "成交额": "amount"}
+    df = df.rename(columns=rename)
+    for col in ("open", "close", "high", "low"):
+        if col not in df.columns:
+            raise RuntimeError(f"tx 数据缺少列 {col}")
+    if "volume" not in df.columns:
+        df["volume"] = 0.0
+    if "amount" not in df.columns:
+        df["amount"] = 0.0
+    df["date"] = pd.to_datetime(df["date"])
+    df = df.sort_values("date").reset_index(drop=True)
+    df["pct_change"] = df["close"].pct_change() * 100
+    return df[["date", "open", "close", "high", "low", "volume", "amount", "pct_change"]]
+
+
+def _fetch_em(code: str, period: str, start: str, end: str) -> pd.DataFrame:
+    raw = ak.stock_zh_a_hist(
+        symbol=code, period=period, start_date=start, end_date=end, adjust="qfq"
+    )
+    if raw is None or raw.empty:
+        return pd.DataFrame()
+    return _normalize_em(raw)
+
+
+def _fetch_tx(code: str, start: str, end: str) -> pd.DataFrame:
+    """腾讯 (qq.com) 备用源, 仅支持日线。"""
+    prefix = "sh" if code.startswith(("6", "9")) else "sz"
+    raw = ak.stock_zh_a_hist_tx(
+        symbol=f"{prefix}{code}", start_date=start, end_date=end, adjust="qfq"
+    )
+    if raw is None or raw.empty:
+        return pd.DataFrame()
+    return _normalize_tx(raw)
+
+
+def _resample(df_daily: pd.DataFrame, period: str) -> pd.DataFrame:
+    """日线 → 周/月线 (OHLC 聚合, 成交量求和)。"""
+    rule = {"weekly": "W-FRI", "monthly": "ME"}[period]
+    s = df_daily.set_index("date")
+    out = pd.DataFrame({
+        "open": s["open"].resample(rule).first(),
+        "high": s["high"].resample(rule).max(),
+        "low": s["low"].resample(rule).min(),
+        "close": s["close"].resample(rule).last(),
+        "volume": s["volume"].resample(rule).sum(),
+        "amount": s["amount"].resample(rule).sum(),
+    }).dropna(subset=["open", "close"]).reset_index()
+    out["pct_change"] = out["close"].pct_change() * 100
+    return out
+
+
 @_cache_data(ttl=3600, show_spinner=False)
 def get_price_history(
     symbol: str,
@@ -100,10 +182,9 @@ def get_price_history(
     输出 DataFrame 列: [date, open, close, high, low, volume, amount, pct_change]
     date 升序排列，dtype 为 datetime64。
 
-    参数:
-        symbol: 6 位股票代码（可带 sh/sz 前缀）
-        period: 'daily' | 'weekly' | 'monthly'
-        start, end: 'YYYYMMDD' 字符串，默认近 3 年
+    源切换策略:
+        1. eastmoney (push2his) 重试 3 次
+        2. 失败后切腾讯日线源; 周/月线由日线 resample 得到
     """
     assert adjust == "qfq", "本系统强制前复权 (qfq)，禁止使用其他复权方式"
     code = normalize_symbol(symbol)
@@ -112,19 +193,26 @@ def get_price_history(
     if start is None:
         start = (dt.date.today() - dt.timedelta(days=365 * 3)).strftime("%Y%m%d")
 
-    raw = ak.stock_zh_a_hist(
-        symbol=code, period=period, start_date=start, end_date=end, adjust=adjust
-    )
-    if raw is None or raw.empty:
-        return pd.DataFrame(columns=["date", "open", "close", "high", "low", "volume", "amount", "pct_change"])
+    empty_cols = ["date", "open", "close", "high", "low", "volume", "amount", "pct_change"]
 
-    # akshare 列名映射
-    rename = {
-        "日期": "date", "开盘": "open", "收盘": "close", "最高": "high", "最低": "low",
-        "成交量": "volume", "成交额": "amount", "涨跌幅": "pct_change",
-    }
-    df = raw.rename(columns=rename)[list(rename.values())].copy()
-    df["date"] = pd.to_datetime(df["date"])
+    df: pd.DataFrame | None = None
+    em_err: Exception | None = None
+    try:
+        df = _retry(lambda: _fetch_em(code, period, start, end))
+    except Exception as e:
+        em_err = e
+
+    if df is None or df.empty:
+        try:
+            daily = _retry(lambda: _fetch_tx(code, start, end))
+        except Exception as tx_err:
+            if em_err is not None:
+                raise em_err
+            raise tx_err
+        if daily.empty:
+            return pd.DataFrame(columns=empty_cols)
+        df = daily if period == "daily" else _resample(daily, period)
+
     df = clean_price_df(df)
     check_price_series(df)
     return df
